@@ -1,36 +1,15 @@
 
 
-
 '''
-TOKENIZERS
-
-BPE
-word -> chunks -> lookup -> emb -> trainable
+gpu 101:
 
 
-~149 813 charactersa
-UNICODE
 
-example
-    ord("h") -> 104
-
-take unicode data into encodings: utf-8 utf-16 utf-32
-utf-8 -> 1 to 4 byts
+A100
+https://modal.com/blog/h200-vs-h100-vs-a100
 
 
-`str.encode('utf-8')`
+https://modal.com/gpu-glossary
+
+https://docs.lambda.ai/education/tutorial-getting-started-with-training-a-machine-learning-model/
 '''
-
-list("beep boo poo paaa poo".encode('utf-8'))
-
-
-"""
-but 256 vocab size too small
-small context long seq
-
-need large vocab
-BPE: compress . merge byte pairs as new token
-
-
-
-"""
