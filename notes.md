@@ -1,7 +1,5 @@
-### modern transformer architectures swiglu, rope, rmsnrom, kvcache
-* https://rohitbandaru.github.io/blog/Transformer-Design-Guide-Pt2/
 
-### on training
+### training
 * https://modal.com/gpu-glossary
 * quantizationm, post training: https://www.youtube.com/watch?v=0VdNflU08yA
 * distributed training: https://www.youtube.com/watch?v=toUSzwR0EV8
@@ -11,6 +9,7 @@
 
 
 -----------------------------------
+# resource accounting
 **cs336 resource accounting lec 2 yt**
 ## how long to train 70B param on 15T tokens on 1024 H100s?
 * total flops = 6 * 70e9 * 15e12 (6 = 2 forward, 4 backwards)
@@ -22,3 +21,8 @@
 * h100 bytes = 80e9
 * bytes per param = 4 + 4 + (4 + 4) params, grad, optimizer state
 * num params = (h100 * 8) / bytes per param
+
+-------------------------------
+# modern transformer arch: swiglu, rope, rmsnrom, kvcache
+* https://github.com/stanford-cs336/spring2025-lectures/blob/e9cb2488fdb53ea37f0e38924ec3a1701925cef3/nonexecutable/2025%20Lecture%203%20-%20architecture.pdf
+* https://rohitbandaru.github.io/blog/Transformer-Design-Guide-Pt2/
