@@ -248,7 +248,6 @@ class CausalSelfAttention(nn.Module):
         y = torch.einsum('b h s t, b h t dk -> b h s dk', att, v)
         # ===replace this with flash attention===
 
-
         y = rearrange(y, 'b h s dk -> b s (h dk)')
         y = self.c_proj(y)
 
@@ -264,6 +263,11 @@ max_length = 30
 
 model = GPT.from_pretrained('gpt2')
 
+# count params
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Total params: {total_params:,}")
+print(f"Trainable params: {trainable_params:,}")
+print(f"Model size: {total_params * 2 / 1024**2:.2f} MB (float16)")
 
-model.eval()
-model.to('cuda')
+# VRAM required
