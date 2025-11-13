@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Token Cloud</title>
+    <style>
+        body {
+            font-family: monospace;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            font-family: monospace;
+            font-size: 14px;
+            padding: 10px;
+            border: 1px solid #ccc;
+        }
+        select, button {
+            padding: 8px;
+            font-size: 14px;
+            margin: 10px 5px 10px 0;
+        }
+        #cloud {
+            margin-top: 20px;
+            line-height: 1.8;
+        }
+        .token {
+            display: inline-block;
+            padding: 4px 8px;
+            margin: 3px;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        #stats {
+            margin: 10px 0;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>Token Cloud Visualizer</h1>
+    
+    <textarea id="input" placeholder="Type your text here...">Hello, I'm a language model and I can help you with many tasks!</textarea>
+    
+    <div>
+        <select id="tokenizer">
+            <option value="gpt2">GPT-2 / GPT-3 / GPT-4</option>
+            <option value="simple">Simple (whitespace)</option>
+            <option value="char">Character-level</option>
+        </select>
+        <button onclick="generateCloud()">Generate Token Cloud</button>
+    </div>
+    
+    <div id="stats"></div>
+    <div id="cloud"></div>
+
+    <script>
+        // Color palette similar to tiktokenizer
+        const colors = [
+            '#FFB3BA', '#FFDFBA', '#FFFFBA', '#BAFFC9', '#BAE1FF',
+            '#FFB3E6', '#C9BAFF', '#FFBAD2', '#BAD7FF', '#BAFFBA',
+            '#FFD4BA', '#E6BAFF', '#BAFFD4', '#FFDABA', '#D4BAFF',
+            '#FFBAC9', '#BABFFF', '#FFFBBA', '#FFBABA', '#BAFFFF'
+        ];
+
+        function simpleTokenize(text) {
+            // Split by whitespace
+            return text.split(/\s+/).filter(t => t.length > 0);
+        }
+
+        function charTokenize(text) {
+            // Character level
+            return text.split('');
+        }
+
+        function gpt2Tokenize(text) {
+            // Simple approximation of BPE-like tokenization
+            // This is NOT actual GPT-2 tokenization, just a visual approximation
+            const tokens = [];
+            const words = text.split(/\b/);
+            
+            for (let word of words) {
+                if (word.match(/\s/)) {
+                    tokens.push(word);
+                } else if (word.length > 4) {
+                    // Split longer words into chunks (pseudo-BPE)
+                    for (let i = 0; i < word.length; i += 3) {
+                        tokens.push(word.slice(i, i + 3));
+                    }
+                } else {
+                    tokens.push(word);
+                }
+            }
+            
+            return tokens.filter(t => t.length > 0);
+        }
+
+        function generateCloud() {
+            const text = document.getElementById('input').value;
+            const tokenizerType = document.getElementById('tokenizer').value;
+            
+            let tokens;
+            if (tokenizerType === 'simple') {
+                tokens = simpleTokenize(text);
+            } else if (tokenizerType === 'char') {
+                tokens = charTokenize(text);
+            } else {
+                tokens = gpt2Tokenize(text);
+            }
+
+            // Create token cloud
+            const cloud = document.getElementById('cloud');
+            cloud.innerHTML = '';
+            
+            tokens.forEach((token, idx) => {
+                const span = document.createElement('span');
+                span.className = 'token';
+                span.textContent = token.replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/ /g, '·');
+                span.style.backgroundColor = colors[idx % colors.length];
+                span.title = `Token ${idx}: "${token}"`;
+                cloud.appendChild(span);
+            });
+
+            // Update stats
+            document.getElementById('stats').textContent = 
+                `Total tokens: ${tokens.length} | Characters: ${text.length}`;
+        }
+
+        // Generate on load
+        generateCloud();
+    </script>
+</body>
+</html>

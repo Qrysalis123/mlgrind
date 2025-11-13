@@ -223,7 +223,9 @@ print(f"Total params: {total_params:,}")
 
 
 
-# Print the initial prompt
+# ---------------------------------------------------------------------
+B, T = 1, 50
+enc = tiktoken.get_encoding('gpt2')
 tokens = enc.encode('helllo im an ai model')
 tokens = torch.tensor(tokens, dtype=torch.long) # (T)
 tokens = repeat(tokens, 'T -> B T', B=B)
@@ -246,4 +248,6 @@ while x.size(1) < T:
         decoded_token = enc.decode([new_token])
         print(decoded_token, end='', flush=True)
 
-print()  # New line at the end
+print()
+
+# ---------------------------------------------------------------------
