@@ -1,5 +1,28 @@
 
 '''
+p1:
+    building the model
+    running untrained model
+
+p2:
+    add the loss function
+    optimizer
+    data loader
+
+p3:
+    gpu training, flash attetnion, quantization,
+
+p4:
+    hyperparams, scaling laws,
+
+p5:
+    distributed data parallel
+    validation, evaluation
+
+----------------------------------------------
+
+
+
 * bpe
 * 124M 12 Layers, 768 dim
 * layer norm moved to input of each sub-block
@@ -75,7 +98,7 @@ class GPT(nn.Module):
 
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
         pos_emb = self.transformer.wpe(pos) # (T) -> (B, T, n_embd)
-        tok_emb = self.transformer.wpe(idx) # (B, T) -> (B, T, n_embd)
+        tok_emb = self.transformer.wte(idx) # (B, T) -> (B, T, n_embd)
         x = tok_emb + pos_emb
 
         for block in self.transformer.h:
@@ -235,17 +258,17 @@ class CausalSelfAttention(nn.Module):
         b, s, d = x.size()
 
         qkv = self.c_attn(x) # (b, s, embd) -> (b, s, 3 * embd)
-        q,k,v = qkv.splait(self.n_embd, dim=2)
+        q,k,v = qkv.split(self.n_embd, dim=2)
 
         q = rearrange(q, 'b s (h dk) -> b h s dk', h=self.n_head, dk=self.dk)
         k = rearrange(k, 'b s (h dk) -> b h s dk', h=self.n_head, dk=self.dk)
         v = rearrange(v, 'b s (h dk) -> b h s dk', h=self.n_head, dk=self.dk)
 
         # ===replace this with flash attention===
-        att = torch.einsum('b h s dk, b h t dk -> b h s t', q, k) / math.sqrt(self.dk)
+        att = torch.einsum('bhsd,bhtd->bhst', q, k) / math.sqrt(self.dk)
         att = att.masked_fill(self.bias[:, :, :s, :s] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
-        y = torch.einsum('b h s t, b h t dk -> b h s dk', att, v)
+        y = torch.einsum('bhst,bhtd->bhsd', att, v)
         # ===replace this with flash attention===
 
         y = rearrange(y, 'b h s dk -> b s (h dk)')
@@ -257,17 +280,64 @@ class CausalSelfAttention(nn.Module):
 
 
 
-# ----------------------------------------------------------------
-num_return_sequences = 5
-max_length = 30
+import sys
 
-model = GPT.from_pretrained('gpt2')
+# ----------------------------------------------------------------
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"using device: {device}")
+
+
+# Get batch data (b * s) -> (b, s) -> shift x = [:-1], y = [1:]
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T+1])
+buf.size()
+x = rearrange(buf[:-1], '(B T) -> B T', B=B)
+y = rearrange(buf[1:], '(B T) -> B T', B=B)
+
+
+# model = GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig())
+model.to(device)
+logits = model(x)
+print(logits.shape) # (B, T, vocab_size)
 
 # count params
 total_params = sum(p.numel() for p in model.parameters())
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Total params: {total_params:,}")
-print(f"Trainable params: {trainable_params:,}")
-print(f"Model size: {total_params * 2 / 1024**2:.2f} MB (float16)")
 
-# VRAM required
+
+# Testing inference
+num_return_sequences = 1
+max_length = 30
+# prefix tokens
+tokens = enc.encode("hello, i'm a language model,")
+tokens = torch.tensor(tokens, dtype=torch.long) # (t,)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (B, T)
+x = tokens.to(device) # (B, T)
+
+# Print the initial prompt
+print(enc.decode(tokens[0].tolist()), end='', flush=True)
+
+while x.size(1) < max_length:
+    with torch.no_grad():
+        logits = model(x) # (B, T, vocab_size)
+        logits = logits[:, -1, :] # last vocab size (B, vocab_size)
+        probs = F.softmax(logits, dim=-1)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # (B, 50)
+        ix = torch.multinomial(topk_probs, 1) # (B, 1)
+        xcol = torch.gather(topk_indices, 1, ix) # (B, 1)
+        x = torch.cat((x, xcol), dim=1) # append to sequence
+
+        # Print only the new token
+        new_token = xcol[0].item()
+        decoded_token = enc.decode([new_token])
+        print(decoded_token, end='', flush=True)
+
+print()  # New line at the end

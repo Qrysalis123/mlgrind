@@ -23,3 +23,34 @@ for k, v in sd_hf.items():
 from transformers import pipeline
 gen = pipeline('text-generation', model='gpt2')
 gen('bark bark bark woof woof ', max_length=10, num_return_sequences=3)
+
+
+
+
+
+"""
+data batches
+
+(batch * seq len) -> (batch, seq len) -> shift for x, y
+
+"""
+
+with open('input.txt', 'r') as f:
+    text = f.read()
+data = text[:1000]
+print(data[:50])
+
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')
+tokens = enc.encode(data)
+
+
+import torch
+from einops import rearrange
+
+buf = torch.tensor(tokens[:24+1])
+x = rearrange(buf[:-1], '(b t) -> b t', b=4)
+y = rearrange(buf[1:], '(b t) -> b t', b=4)
+
+print(x)
+print(y)
