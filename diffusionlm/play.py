@@ -1,5 +1,10 @@
 
 """
+positionless tokens
+gpt can actually take shuffled tokens -> decode -> reorganize
+and the text makes sense kinda.
+
+so can learn content first? context last?
 
 (b t) -> (b t c) -> (b h t d) -> (b h t t) -> mask -> (b h t d) -> (b t c) -> (b t v)
 
@@ -49,10 +54,8 @@ t-4:    10% masked -> remask -> 20% masked
 t-5:    0% masked -> done
 
 
-# Noising schedule: do an actual diffusion instead of just random masking
-* shuffle schedule: shuffle words over T until positionless
-# shuffle words -> tokenize
-* precompute entropy of words. content vs function words
+dont need to shuffle text, just use increasing context loss
+decreasing content loss.
 
 * increasing content word masking
 * decreasing function word masking

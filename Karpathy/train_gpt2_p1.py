@@ -11,12 +11,15 @@ p2:
 
 p3:
     gpu training, flash attetnion, quantization,
+    hyperparams, scaling laws,
 
 p4:
-    hyperparams, scaling laws,
+    grad accum
 
 p5:
     distributed data parallel
+
+p6:
     validation, evaluation
 
 ----------------------------------------------
@@ -58,6 +61,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from einops import rearrange
 import math
+import tiktoken
 
 @dataclass
 class GPTConfig:
@@ -280,7 +284,6 @@ class CausalSelfAttention(nn.Module):
 
 
 
-import sys
 
 # ----------------------------------------------------------------
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -288,7 +291,6 @@ print(f"using device: {device}")
 
 
 # Get batch data (b * s) -> (b, s) -> shift x = [:-1], y = [1:]
-import tiktoken
 enc = tiktoken.get_encoding('gpt2')
 with open('input.txt', 'r') as f:
     text = f.read()

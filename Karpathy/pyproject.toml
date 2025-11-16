@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "karpathy-gpt2"
+version = "0.1.0"
+dependencies = [
+    "torch",
+    "tiktoken",
+    "einops",
+    "numpy",
+    "tqdm",
+    "datasets",
+]

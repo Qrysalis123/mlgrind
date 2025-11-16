@@ -1,106 +1,30 @@
 
 """
-------------GPU---------------------
-p3:
-    1x A10:
-        B=8, T=1024
-
-    f32:
-        step 45: loss=6.1660, dt=869.73ms, tok/sec: 9418.96
-        step 46: loss=6.2801, dt=872.17ms, tok/sec: 9392.67
-        step 47: loss=6.2553, dt=871.35ms, tok/sec: 9401.52
-        step 48: loss=6.1532, dt=874.57ms, tok/sec: 9366.84
-        step 49: loss=6.0123, dt=872.03ms, tok/sec: 9394.22
-
-    bf16: (activations bf16, weights float32) mixed
-        torch.autocast() not all get changed so mixed prec
-        step 45: loss=6.1496, dt=434.47ms, tok/sec: 18854.96
-        step 46: loss=6.2664, dt=435.45ms, tok/sec: 18812.57
-        step 47: loss=6.2451, dt=433.69ms, tok/sec: 18889.07
-        step 48: loss=6.1271, dt=433.26ms, tok/sec: 18907.72
-        step 49: loss=5.9992, dt=434.71ms, tok/sec: 18844.77
-
-    torch.compile() + bf16:
-        compile -> read/write hbm optimizes
-        operations from hbm -> sram
-        step 45: loss=6.1618, dt=228.08ms, tok/sec: 35917.18
-        step 46: loss=6.2736, dt=226.86ms, tok/sec: 36110.03
-        step 47: loss=6.2534, dt=229.18ms, tok/sec: 35745.37
-        step 48: loss=6.1469, dt=227.89ms, tok/sec: 35947.65
-        step 49: loss=6.0066, dt=228.12ms, tok/sec: 35910.23
-
-    Flash Attention
-        matmul, dropout, softmax, mask, matmul -> into one Fused Kernel algorithm
-        more flops ~7.6x.  does not read/write large NxN attention matrix to HBM
-        `F.scaled_dot_product_attention()`
-        step 45: loss=6.1837, dt=161.27ms, tok/sec: 50796.76
-        step 46: loss=6.2890, dt=162.45ms, tok/sec: 50427.95
-        step 47: loss=6.2460, dt=159.59ms, tok/sec: 51331.54
-        step 48: loss=6.1558, dt=161.64ms, tok/sec: 50680.55
-        step 49: loss=6.0249, dt=158.84ms, tok/sec: 51572.92
-
-    Powers of 2 numbers:
-        cuda works in powers of 2, kernels in pwoer of 2
-        increase to the next pwoer of 2
-
-        GPT(GPTConfig(vocab_size=50304))
-
-        step 45: loss=6.1701, dt=155.83ms, tok/sec: 52571.59
-        step 46: loss=6.2770, dt=155.03ms, tok/sec: 52841.22
-        step 47: loss=6.2548, dt=154.67ms, tok/sec: 52964.87
-        step 48: loss=6.1618, dt=155.70ms, tok/sec: 52615.38
-        step 49: loss=6.0308, dt=155.14ms, tok/sec: 52805.49
-
-        158ms -> 155ms increase in flops but small speed up
-        the extra tokens arent used. but the weights are used driven to 0
-        kernels use block tiles powers of 2, boundary kernels do the remaining
-        so padding in powers of 2 efficient
-
-    training optimizer hyperparams:
-    "GPT-3 use Adam with B1 = 0.9, B2 = 0.95, e=1e-8"
-        torch.optim.AdamW(... betas=(0.9, 0.95), eps=1e-8)
-
-    Global nornm clipping
-        "clip the global norm of the gradient at 1.0":
-            after loss backwards, clip them so maximum norm
-            norm = clip_grad_norm_(model.params, 1.0)
-            len of vector is no longer than 1.0
-            smoother, no spike in the grads
-            stabilizes the norm of grads vector
-
-    Learning Rate scheduler:
-        "cosine decay for learning rate down to 10% of its value"
-        linear LR warmup for first T tokens
-        so starts 0 -> linearly ramps up -> cosine down -> min lr
-
-        GPT-3 Small:
-            lr = 6e-4
-            10% of its value
-            warmup steps: linear increase
-            max_steps: 10% of lr
-            cosine decay in between
-
-    "All models use weight decay of 0.1 to provide a small amount of regularization"
-    generalize more. some weights can grow large. regularize
-        class GPT()
-            def configure_optimizers()
-                split params into bias vs matmuls/embeddings
-                weight decay on dims >=2 (matmuls ones)
-                no weight decay on bias
-                ...
-                fused kernel. instead of iterating for loops on many kernels
-                single kernel called to update them.
-                ...
-        optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
-
-        step 45 | loss: 6.0714 | norm: 0.9764 | lr: 0.0001 | dt: 158.75ms | tok/sec: 51602.90
-        step 46 | loss: 6.1561 | norm: 0.8837 | lr: 0.0001 | dt: 158.41ms | tok/sec: 51712.40
-        step 47 | loss: 6.0178 | norm: 1.1676 | lr: 0.0001 | dt: 159.11ms | tok/sec: 51487.91
-        step 48 | loss: 5.9376 | norm: 0.9460 | lr: 0.0001 | dt: 158.70ms | tok/sec: 51619.41
-        step 49 | loss: 5.8042 | norm: 0.9790 | lr: 0.0001 | dt: 158.80ms | tok/sec: 51585.47
-
 p4:
     gradient accumulation (bc the hyperparams are correlated to the batch size)
+
+    batch size 0.5M: (is the total tokesn a batch. not batch number)
+        0.5M,
+            0.5e6 / 1024 seq len = ~488 batch size (B=488, T=1024)
+
+    total_batch_size = 524288 # 2**19 (~0.5M) number of tokens per batch
+    B, T = 16, 1024
+
+    assert total_batch_size % (B * T) == 0
+    grad steps = total_batch_size // (B * T) accum gradient at each batch step
+
+    so accum gradients until learnt a token size of 0.5M before updating
+
+
+    for micro_step in range(grad_accum_steps):
+        loss
+        += accum loss
+        loss / N normalizer
+
+
+
+
+
 
 p5:
     distributed data parallel
@@ -311,11 +235,19 @@ class DataLoaderLite:
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"using device: {device}")
 
+
+total_batch_size = 524288 # 2**19, using GPT-2 small of 0.5M tokens per batch
 B, T = 8, 1024
+assert total_batch_size % (B*T) ==0
+grad_accum_steps = total_batch_size // (B*T)
+print('total desired tokens per batch:', total_batch_size)
+print('grad_accum_steps:', grad_accum_steps)
+
+
+
 train_loader = DataLoaderLite(B, T)
 
-torch.set_float32_matmul_precision('high') # TF32
-
+torch.set_float32_matmul_precision('high')
 
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
@@ -348,12 +280,17 @@ optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, dev
 
 for step in range(max_steps):
     t0 = time.time()
-    x, y = train_loader.next_batch()
-    x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    with torch.autocast(device_type=device, dtype=torch.bfloat16):
-        logits, loss = model(x, y)
-    loss.backward()
+    loss_accum = 0.0
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach() # detach from tensor
+        loss.backward()
+
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
@@ -362,5 +299,6 @@ for step in range(max_steps):
     torch.cuda.synchronize()
     t1 = time.time()
     dt = (t1 - t0)
-    tokens_per_sec = (train_loader.B * train_loader.T) / dt
-    print(f"step {step} | loss: {loss.item():.4f} | norm: {norm:.4f} | lr: {lr:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+    tokens_per_sec = tokens_processed / dt
+    print(f"step {step} | loss: {loss_accum.item():.6f} | norm: {norm:.4f} | lr: {lr:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")

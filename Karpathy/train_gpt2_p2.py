@@ -52,12 +52,15 @@ p2:
 ------------GPU---------------------
 p3:
     gpu training, flash attetnion, quantization,
+    hyperparams, scaling laws,
 
 p4:
-    hyperparams, scaling laws,
+    grad accum
 
 p5:
     distributed data parallel
+
+p6:
     validation, evaluation
 
 
@@ -267,8 +270,28 @@ import sys; sys.exit(0)
 
 
 # count params
+# -------------------rough resource accounting-----------------------------
 total_params = sum(p.numel() for p in model.parameters())
-print(f"Total params: {total_params:,}")
+memory_fp32 = total_params * 4
+memory_fp16 = total_params * 2
+
+print(f"{total_params/1e6:.0f}M params | FP32: {memory_fp32/1e9:.2f} GB | FP16: {memory_fp16/1e9:.2f} GB")
+
+config = model.config
+
+# 1. Model parameters
+params = total_params * 4  # 0.5 GB
+# 2. Gradients (same as params)
+grads = total_params * 4  # 0.5 GB
+# 3. Optimizer states (AdamW: 2 states per param)
+optimizer = total_params * 8  # 1.0 GB
+# 4. Activations during forward/backward
+activations = B * T * config.n_embd * 4 * config.n_layer * 4  # ~1-2 GB
+attn_scores = B * config.n_head * T * T * config.n_layer * 4  # ~4.8 GB
+logits = B * T * config.vocab_size * 4  # ~3.07 GB
+total = (params + grads + optimizer + activations + attn_scores + logits) / 1e9
+print(f"Total training memory: ~{total:.2f} GB")
+# -------------------rough resource accounting-----------------------------
 
 
 
