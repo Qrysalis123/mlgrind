@@ -253,9 +253,20 @@ train_loader = DataLoaderLite(B=4, T=32)
 model = GPT(GPTConfig())
 model.to(device)
 
+enc = tiktoken.get_encoding('gpt2')
+
+# create log
+import os
+log_dir = "log"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "shakespeare_loss.txt")
+with open(log_file, 'w') as f:
+    # train loss, val loss, hellaswag accuracy
+    pass
+
 # optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+for i in range(5000):
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
@@ -263,59 +274,91 @@ for i in range(50):
     loss.backward()
     optimizer.step()
     print(f"step {i}: loss={loss.item():.4f}")
+    with open(log_file, 'a') as f:
+        f.write(f"{i} shakespeare {loss:.4f}\n")
 
+    # Save model weights periodically
+    if (i + 1) % 50 == 0:
+        os.makedirs("checkpoints", exist_ok=True)
+        torch.save(model.state_dict(), f"checkpoints/step_{i}.pt")
+        torch.save(model.state_dict(), "checkpoints/latest.pt")
+        print(f"Saved checkpoint at step {i}")
+
+    # Inference every 100 steps
+    if (i + 1) % 100 == 0:
+        model.eval()
+        print(f"\n{'='*60}")
+        print(f"Step {i} - Generating text...")
+        print('='*60)
+
+        prompt = "hi i am an ai model"
+        tokens = enc.encode(prompt)
+        tokens = torch.tensor(tokens, dtype=torch.long, device=device)
+        tokens = tokens.unsqueeze(0)
+
+        with torch.no_grad():
+            for _ in range(50):
+                tokens_cond = tokens if tokens.size(1) <= model.config.block_size else tokens[:, -model.config.block_size:]
+                logits, _ = model(tokens_cond)
+                logits = logits[:, -1, :]
+                probs = F.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                tokens = torch.cat([tokens, next_token], dim=1)
+
+        generated_text = enc.decode(tokens[0].tolist())
+        print(generated_text)
+        print()
+
+        model.train()
+
+
+# ----------------------------------------------------------------
+# Inference
+# ----------------------------------------------------------------
+
+print("\n" + "="*60)
+print("Generating text...")
+print("="*60)
+
+model.eval()
+
+# Get the tokenizer
+
+# Start with a prompt
+prompt = "hi i am an ai model"
+tokens = enc.encode(prompt)
+tokens = torch.tensor(tokens, dtype=torch.long, device=device)
+tokens = tokens.unsqueeze(0)  # (1, T)
+
+# Generate
+max_new_tokens = 100
+with torch.no_grad():
+    for _ in range(max_new_tokens):
+        # Crop to block_size if needed
+        tokens_cond = tokens if tokens.size(1) <= model.config.block_size else tokens[:, -model.config.block_size:]
+
+        # Forward
+        logits, _ = model(tokens_cond)
+
+        # Get logits at the last position
+        logits = logits[:, -1, :]  # (B, vocab_size)
+
+        # Sample from the distribution
+        probs = F.softmax(logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
+
+        # Append to sequence
+        tokens = torch.cat([tokens, next_token], dim=1)
+
+# Decode and print
+generated_text = enc.decode(tokens[0].tolist())
+print(generated_text)
+
+# Save to log file
+with open(log_file, 'a') as f:
+    f.write(f"\n{'='*60}\n")
+    f.write(f"Generated text after training:\n")
+    f.write(f"{'='*60}\n")
+    f.write(f"{generated_text}\n")
 
 import sys; sys.exit(0)
-
-
-
-# count params
-# -------------------rough resource accounting-----------------------------
-total_params = sum(p.numel() for p in model.parameters())
-memory_fp32 = total_params * 4
-memory_fp16 = total_params * 2
-
-print(f"{total_params/1e6:.0f}M params | FP32: {memory_fp32/1e9:.2f} GB | FP16: {memory_fp16/1e9:.2f} GB")
-
-config = model.config
-
-# 1. Model parameters
-params = total_params * 4  # 0.5 GB
-# 2. Gradients (same as params)
-grads = total_params * 4  # 0.5 GB
-# 3. Optimizer states (AdamW: 2 states per param)
-optimizer = total_params * 8  # 1.0 GB
-# 4. Activations during forward/backward
-activations = B * T * config.n_embd * 4 * config.n_layer * 4  # ~1-2 GB
-attn_scores = B * config.n_head * T * T * config.n_layer * 4  # ~4.8 GB
-logits = B * T * config.vocab_size * 4  # ~3.07 GB
-total = (params + grads + optimizer + activations + attn_scores + logits) / 1e9
-print(f"Total training memory: ~{total:.2f} GB")
-# -------------------rough resource accounting-----------------------------
-
-
-
-# Print the initial prompt
-tokens = enc.encode('helllo im an ai model')
-tokens = torch.tensor(tokens, dtype=torch.long) # (T)
-tokens = repeat(tokens, 'T -> B T', B=B)
-x = tokens.to(device)
-
-print(enc.decode(x[0].tolist()), end='', flush=True)
-
-while x.size(1) < T:
-    with torch.no_grad():
-        logits, loss = model(x) # (B, T, vocab_size)
-        logits = logits[:, -1, :] # last vocab size (B, vocab_size)
-        probs = F.softmax(logits, dim=-1)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # (B, 50)
-        ix = torch.multinomial(topk_probs, 1) # (B, 1)
-        xcol = torch.gather(topk_indices, 1, ix) # (B, 1)
-        x = torch.cat((x, xcol), dim=1) # append to sequence
-
-        # Print only the new token
-        new_token = xcol[0].item()
-        decoded_token = enc.decode([new_token])
-        print(decoded_token, end='', flush=True)
-
-print()  # New line at the end

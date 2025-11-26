@@ -1,1 +1,24 @@
 workflow.txt
+
+# Heavy data files
+train_log.txt
+input.txt
+*.log
+
+# Checkpoints and model weights
+checkpoints/
+checkpoint/
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+
+# Logs
+log/
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
