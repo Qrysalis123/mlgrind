@@ -80,9 +80,9 @@ import tiktoken
 class GPTConfig:
     block_size: int = 1024 # max seq len
     vocab_size: int = 50257 # vocab size 50257 (50000 bpe + 256 bytes + 1 <eos>)
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
+    n_layer: int = 8
+    n_head: int = 8
+    n_embd: int = 512
 
 class GPT(nn.Module):
     def __init__(self, config):

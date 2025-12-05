@@ -1,6 +1,7 @@
 import torch
+import torch.nn as nn
 from model import DLM, DiTConfig
-from transformers import GPT2TokenizerFast
+import tiktoken
 import sys
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -14,22 +15,25 @@ max_seq_len = config.seq_len
 
 
 # Initialize model with torch.compile for faster inference
-model = DLM(config, compile_model=False).to(device)  # Disable compile with kv cache
+model = DLM(config).to(device)  # Disable compile with kv cache
 
-# For testing: wrap model to output random scores (replace with trained model)
-class RandomScoreWrapper:
-    """Wrapper for testing - outputs random scores. Replace with trained model."""
-    def __init__(self, model):
-        self.model = model
+# Initialize random weights for testing (since we don't have trained weights yet)
+# Override the zero initialization in the model architecture
+def init_weights(m):
+    if isinstance(m, nn.Linear):
+        nn.init.normal_(m.weight, mean=0.0, std=0.02)
+        if m.bias is not None:
+            nn.init.normal_(m.bias, mean=0.0, std=0.02)
+    elif isinstance(m, nn.Embedding):
+        nn.init.normal_(m.weight, mean=0.0, std=0.02)
+    elif hasattr(m, 'scale') and isinstance(m.scale, nn.Parameter):
+        # RMSNorm scale - keep at 1.0 for stability
+        nn.init.ones_(m.scale)
 
-    def __call__(self, x, sigma, kv_cache=None, prefix_len=0):
-        B, S = x.shape
-        if kv_cache is not None and prefix_len > 0:
-            # Only return logits for new tokens
-            return torch.randn(B, S - prefix_len, config.vocab_size, device=device), None
-        return torch.randn(B, S, config.vocab_size, device=device), None
+model.apply(init_weights)
 
-score_fn = RandomScoreWrapper(model)
+# Use model directly (random weights) to test KV caching
+score_fn = model
 
 # ------------------------------
 # Sampling Utilities
@@ -98,11 +102,12 @@ def sample_categorical(probs):
 
 # Setup tokenizer and prefix
 eos_token_id = 9999999
-tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')
+enc = tiktoken.get_encoding('gpt2')
+
 prefix = "helllo i am an ai model i can "
 
 # Prepare input conditioning
-prompt_tokens = torch.tensor(tokenizer(prefix).input_ids, device=device)
+prompt_tokens = torch.tensor(enc.encode(prefix), device=device)
 # Repeat for batch: (T,) -> (B, T)
 prompt_tokens = prompt_tokens.unsqueeze(0).repeat(batch_size, 1)
 prompt_len = prompt_tokens.size(1)
@@ -112,7 +117,7 @@ tokens_remaining = max_seq_len - prompt_len
 # Adaptive step size & block size
 # https://arxiv.org/pdf/2311.14768
 # ------------------------------
-steps = 2 ** torch.randint(2, 7, (1,)).item()
+steps = 2 ** torch.randint(2, 3, (1,)).item()
 block_size = 2 ** torch.randint(3, 7, (1,)).item()
 block_size = min(block_size, tokens_remaining)
 
@@ -120,10 +125,10 @@ block_size = min(block_size, tokens_remaining)
 noise_block = torch.randint(0, config.vocab_size, (batch_size, block_size), device=device)
 x_t = torch.cat([prompt_tokens, noise_block], dim=1)
 
-CREAM = '\033[38;5;229m'  # Faint gold cream for denoising
+BLUE = '\033[38;5;153m'  # Faint blue for denoising
 
 # Cache prompt text (only decode once)
-cached_prompt_text = tokenizer.decode(prompt_tokens[0])
+cached_prompt_text = enc.decode(prompt_tokens[0].tolist())
 cached_prompt_len = len(cached_prompt_text)
 
 with torch.no_grad():
@@ -142,17 +147,17 @@ with torch.no_grad():
 
         # Sampling loop
         for step in range(steps):
-            t = timesteps[step] * torch.ones(batch_size, 1, device=device)
+            t = timesteps[step] * torch.ones(batch_size, device=device) # (B,)
 
             # Compute noise levels
-            curr_sigma = geometric_noise_schedule(t)
-            next_sigma = geometric_noise_schedule(t - dt)
+            curr_sigma = geometric_noise_schedule(t) # (B,)
+            next_sigma = geometric_noise_schedule(t - dt) # (B,)
             dsigma = curr_sigma - next_sigma
 
             # Get model score with KV caching
             # On first step, cache is None so we compute full attention
             # On subsequent steps, we only compute attention for new block
-            score, kv_cache = score_fn(x_t, t, kv_cache=kv_cache, prefix_len=prefix_len if step > 0 else 0)
+            score, kv_cache = score_fn(x_t, curr_sigma, kv_cache=kv_cache, prefix_len=prefix_len if step > 0 else 0)
 
             # If we used cache, score is only for the block
             # Otherwise it's for the full sequence
@@ -185,19 +190,14 @@ with torch.no_grad():
             # Decode with rainbow colors for denoising!
             sys.stdout.write('\033[2J\033[H')  # Clear screen + home
 
-            # Use cached prompt text, only decode new tokens
-            full_text = tokenizer.decode(x_t[0])
+            # Decode and color new tokens (clip to tokenizer vocab range)
+            clipped_tokens = torch.clamp(x_t[0], 0, enc.n_vocab - 1)
+            full_text = enc.decode(clipped_tokens.tolist())
             new_tokens = full_text[cached_prompt_len:]
+            colored_new = f"{BLUE}{new_tokens}\033[0m"
 
-            # Show tokens remaining
             tokens_used = x_t.size(1)
             tokens_remaining = max_seq_len - tokens_used
-
-            # Color denoising tokens cream, normal when complete
-            if tokens_remaining > 0:
-                colored_new = f"{CREAM}{new_tokens}\033[0m"
-            else:
-                colored_new = new_tokens
 
             # Compute cache memory usage
             cache_memory_bytes = (2 * config.n_layers * config.n_heads * prefix_len *
@@ -212,7 +212,7 @@ with torch.no_grad():
                 cache_mem_str = f"{cache_memory_bytes/(1024**2):.1f}MB"
 
             # Mode indicator based on steps vs block size
-            mode = "Thinking..." if steps / block_size >= 4 else "Retarding..."
+            mode = "Thinking..." if steps > block_size else "Yapping..."
 
 
             sys.stdout.write(f"{cached_prompt_text}{colored_new}\n")
@@ -230,13 +230,14 @@ with torch.no_grad():
         # Next iteration
         prompt_tokens = x_t.clone()
 
-        # Update cached prompt text
-        cached_prompt_text = tokenizer.decode(prompt_tokens[0])
+        # Update cached prompt text (clip to tokenizer vocab range)
+        clipped_tokens = torch.clamp(prompt_tokens[0], 0, enc.n_vocab - 1)
+        cached_prompt_text = enc.decode(clipped_tokens.tolist())
         cached_prompt_len = len(cached_prompt_text)
 
         # Adaptive select steps, block size
-        steps = 2 ** torch.randint(1, 7, (1,)).item()
-        block_size = 2 ** torch.randint(1, 7, (1,)).item()
+        steps = 2 ** torch.randint(3, 7, (1,)).item()
+        block_size = 2 ** torch.randint(3, 7, (1,)).item()
 
         # Clip block_size to tokens remaining
         tokens_remaining = max_seq_len - prompt_tokens.size(1)
@@ -247,51 +248,3 @@ with torch.no_grad():
         x_t = torch.cat([prompt_tokens, noise_block], dim=1)
 
         print()  # Final newline when done
-
-
-
-"""
-KV Caching Strategy Explained:
-==============================
-
-1. WHAT WE CACHE:
-   - For each transformer layer, we cache K and V matrices for the prefix tokens
-   - These don't change during the denoising steps for a given block
-   - Cache shape: List of (k, v) tuples, one per layer
-     - k: (batch, n_heads, prefix_len, head_dim)
-     - v: (batch, n_heads, prefix_len, head_dim)
-
-2. WHEN WE USE IT:
-   - First denoising step: Compute full attention, store K/V for prefix
-   - Subsequent steps: Only compute Q/K/V for the block being denoised
-   - Concatenate cached prefix K/V with new block K/V for attention
-
-3. WHY IT WORKS:
-   - Attention is: softmax(Q @ K.T) @ V
-   - If prefix tokens don't change, their K and V don't change
-   - We only need new Q for full sequence, new K/V for block
-   - Saves ~(prefix_len / total_len) of attention computation
-
-4. IMPLEMENTATION DETAILS:
-   - Modified MHA.forward() to accept kv_cache and prefix_len
-   - On cache hit: only compute QKV for x[:, prefix_len:]
-   - Concatenate cached K/V with new K/V before attention
-   - Return updated cache for next iteration
-
-5. SPEEDUP ANALYSIS:
-   With P = prefix_len, B = block_size, L = num_layers, S = num_steps:
-
-   Without cache: L * S * (P + B)^2 attention ops
-   With cache:    L * (P + B)^2 + L * (S-1) * B * (P + B) attention ops
-
-   For P=512, B=64, L=12, S=16:
-     Without: 12 * 16 * 576^2 = 63.8M ops
-     With:    12 * 576^2 + 12 * 15 * 64 * 576 = 10.6M ops
-     Speedup: 6x
-
-6. LIMITATIONS:
-   - Memory: Need to store K/V for all layers
-   - Currently invalidates cache after each denoising step
-     (could be optimized to update incrementally)
-   - torch.compile may not optimize as well with dynamic caching
-"""
