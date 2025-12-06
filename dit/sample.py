@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from multi_gpu_model import SEDD, DLMConfig, UniformGraph, LogLinearNoise
+from model import SEDD, DLMConfig, UniformGraph, GeometricNoise
 import tiktoken
 import sys
 import argparse
@@ -28,6 +28,10 @@ batch_size = 1
 sampling_eps = 1e-5
 max_seq_len = config.length
 
+# geometric noise
+sigma_min = 1e-3
+sigma_max = 20
+
 # Initialize model
 model = SEDD(config).to(device)
 
@@ -48,7 +52,7 @@ model.eval()  # Set to eval mode for inference
 
 # Initialize graph and noise schedule
 graph = UniformGraph(config.vocab)
-noise = LogLinearNoise(eps=1e-3)
+noise = GeometricNoise(sigma_min=sigma_min, sigma_max=sigma_max)
 
 # ------------------------------
 # Main Sampling with KV Cache
@@ -72,7 +76,7 @@ tokens_remaining = max_seq_len - prompt_len
 # https://arxiv.org/pdf/2311.14768
 # ------------------------------
 steps = 2 ** torch.randint(2, 3, (1,)).item()
-block_size = 2 ** torch.randint(3, 9, (1,)).item()
+block_size = 2 ** torch.randint(3, 7, (1,)).item()
 block_size = min(block_size, tokens_remaining)
 
 # Initialize: prompt + noise block

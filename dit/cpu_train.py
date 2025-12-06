@@ -3,7 +3,7 @@ import torch
 import torch.optim as optim
 import tiktoken
 
-from multi_gpu_model import SEDD, DLMConfig, LogLinearNoise, UniformGraph
+from model import SEDD, DLMConfig, GeometricNoise, UniformGraph
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -58,14 +58,14 @@ log_freq = 1
 eval_iters = 50
 block_size = 1024
 
+# sampling
+sampling_steps = 32
+sampling_eps=1e-5
+sampling_batch_dims=(1,16)
+
 # noise
 sigma_min = 1e-4
 sigma_max = 20
-
-# sampling
-sampling_steps = 16
-sampling_eps=1e-5
-sampling_batch_dims=(1,16)
 
 # adamW Optimizer
 weight_decay = 0
@@ -77,20 +77,17 @@ warmup = 0.05 * n_iters # 0.2 original
 grad_clip = 5.0
 
 
-
-
-
 #####################
 #    build model    #
 #####################
 config = DLMConfig(
-    hidden_size = 32,
-    cond_dim = 16,
+    hidden_size = 64,
+    cond_dim = 32,
     length = 1024,
     vocab = vocab_size,
     # vocab = 50304,
-    n_blocks = 2,
-    n_heads = 2,
+    n_blocks = 4,
+    n_heads = 4,
     dropout = 0.0
 )
 
@@ -98,8 +95,7 @@ config = DLMConfig(
 print(config)
 score_fn = SEDD(config).to(device)
 graph = UniformGraph(config.vocab)
-# noise = GeometricNoise(sigma_min=sigma_min, sigma_max=sigma_max)
-noise = LogLinearNoise(eps=1e-3)
+noise = GeometricNoise(sigma_min, sigma_max)
 
 num_params = sum(p.numel() for p in score_fn.parameters())
 print(f"model params: {num_params/1e6:.3f}M")
@@ -126,7 +122,6 @@ def optimizer_step(optimizer, model, step, lr, warmup, grad_clip):
     return optimizer, norm
 
 
-
 #######################
 #    training loop    #
 #######################
@@ -147,7 +142,7 @@ for step in range(n_iters):
     noised_pct = (xt[0] != x0[0]).sum() / x0.size()[1]
 
     # predict log score
-    log_score, _ = score_fn(xt, sigma.reshape(-1)) # (B, S, V)
+    log_score, _ = score_fn(xt, sigma.reshape(-1), kv_cache=None, prefix_len=0) # (B, S, V)
     loss = graph.score_entropy(log_score, sigma[:, None], xt, x0)
     loss = (dsigma[:, None] * loss).sum(dim=-1).mean()
 
@@ -186,7 +181,7 @@ for step in range(n_iters):
             for i in range(sampling_steps):
                 t = timesteps[i] * torch.ones(x.shape[0], 1, device=device)
                 sigma, dsigma = noise.get_noise(t)
-                log_score, _ = score_fn(x, sigma.reshape(-1)) # (B, S, V)
+                log_score, _ = score_fn(x, sigma.reshape(-1), kv_cache=None, prefix_len=0) # (B, S, V)
                 score = log_score.exp() # exp for actual score
 
                 rev_rate = dt * dsigma[..., None] * graph.reverse_rate(x, score) # (1) * (B,1,1) * (B,T,V)
