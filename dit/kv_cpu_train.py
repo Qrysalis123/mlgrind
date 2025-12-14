@@ -1,5 +1,6 @@
 import os
 import time
+import math
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -28,9 +29,12 @@ noise_eps = 1e-3
 
 # optimizer
 lr = 3e-4
+min_lr = 1e-5  # for cosine decay
 beta1 = 0.9
 beta2 = 0.999
+weight_decay = 0.1
 warmup_iters = 2000
+max_iters = 100000  # for cosine decay
 grad_clip = 1.0
 
 # logging/checkpointing
@@ -111,12 +115,18 @@ print(f"Model params: {num_params/1e6:.2f}M\n")
 #####################
 #    optimizer      #
 #####################
-optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2))
+optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(beta1, beta2), weight_decay=weight_decay)
 
 def get_lr(step):
+    # Linear warmup
     if step < warmup_iters:
         return lr * step / warmup_iters
-    return lr
+    # Cosine decay to min_lr
+    if step > max_iters:
+        return min_lr
+    decay_ratio = (step - warmup_iters) / (max_iters - warmup_iters)
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (lr - min_lr)
 
 #####################
 #    resume         #

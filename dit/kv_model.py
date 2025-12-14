@@ -137,6 +137,17 @@ class EmbeddingLayer(nn.Module):
 #                             DDiT Block                                        #
 #################################################################################
 
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+        return (x / rms) * self.weight
+
+
 class DDiTBlock(nn.Module):
     def __init__(self, dim, n_heads, cond_dim, mlp_ratio=4, dropout=0.1):
         super().__init__()
@@ -148,6 +159,10 @@ class DDiTBlock(nn.Module):
         self.norm1 = LayerNorm(dim)
         self.attn_qkv = nn.Linear(dim, 3 * dim, bias=False)
         self.attn_out = nn.Linear(dim, dim, bias=False)
+        
+        # QK-Norm for attention stability
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
 
         self.norm2 = LayerNorm(dim)
         self.mlp = nn.Sequential(
@@ -189,6 +204,10 @@ class DDiTBlock(nn.Module):
         qkv = self.attn_qkv(x_norm)
         qkv = rearrange(qkv, "b s (three h d) -> three b s h d", three=3, h=self.n_heads)
         q, k, v = qkv.unbind(dim=0)
+
+        # QK-Norm before rotary
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         # Apply rotary
         cos, sin = rotary_cos_sin
@@ -249,6 +268,10 @@ class DDiTBlock(nn.Module):
         qkv = rearrange(qkv, "b s (three h d) -> three b s h d", three=3, h=self.n_heads)
         q, k, v = qkv.unbind(dim=0)
 
+        # QK-Norm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
         cos, sin = rotary_cos_sin
         q = apply_rotary_pos_emb(q, cos, sin)
         k = apply_rotary_pos_emb(k, cos, sin)
@@ -296,6 +319,10 @@ class DDiTBlock(nn.Module):
         qkv = self.attn_qkv(x_norm)
         qkv = rearrange(qkv, "b s (three h d) -> three b s h d", three=3, h=self.n_heads)
         q, k, v = qkv.unbind(dim=0)
+
+        # QK-Norm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         cos, sin = rotary_cos_sin
         q = apply_rotary_pos_emb(q, cos, sin)
