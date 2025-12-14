@@ -23,6 +23,8 @@ rsync -avz --exclude '__pycache__' --exclude '*.pyc' \
 # or just specific files
 rsync -avz dit/gpu_train.py dit/model.py dit/data.py \
   ubuntu@<instance-ip>:/home/ubuntu/dit/
+  
+rsync -avz gpu_train.py ubuntu@150.136.43.108:/home/ubuntu/meow/
 ```
 
 ## 3. Setup on Remote (First Time Only)
@@ -31,8 +33,6 @@ rsync -avz dit/gpu_train.py dit/model.py dit/data.py \
 # install dependencies
 pip install torch tiktoken datasets einops
 
-# create persistent storage directory
-mkdir -p /mnt/persistent/dit
 ```
 
 ## 4. Run Training
@@ -49,6 +49,37 @@ cd /home/ubuntu/dit
 torchrun --standalone --nproc_per_node=8 gpu_train.py
 ```
 
+Check GPUs config
+```bash
+nvidia-smi --list-gpus
+
+nvidia-smi
+
+nvidia-smi -L | wc -l
+
+# node
+nproc
+
+# live GPU monitoring
+watch -n 1 nvidia-smi
+
+# disk space
+df -h
+
+# RAM
+free -h
+
+# CUDA version
+nvcc --version
+
+# Get GPU count, then use it
+torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) gpu_train.py
+
+
+
+
+```
+
 ## 5. Run in Background (Survives SSH Disconnect)
 
 Using tmux:
@@ -63,6 +94,9 @@ torchrun --standalone --nproc_per_node=8 gpu_train.py
 
 # reattach later
 tmux attach -t train
+
+# kill
+tmux kill-session -t train
 ```
 
 Or using nohup:
