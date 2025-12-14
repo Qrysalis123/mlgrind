@@ -15,8 +15,8 @@ device = "cpu"
 #    config     #
 #################
 
-batch_size = 16
-seq_len = 32
+batch_size = 8
+seq_len = 1024
 
 # Block-wise training config
 # split_idx ~ Uniform[0, max_prefix] - includes 0 for "no prefix" case
@@ -30,7 +30,7 @@ noise_eps = 1e-3
 lr = 3e-4
 beta1 = 0.9
 beta2 = 0.999
-warmup_iters = 100
+warmup_iters = 2000
 grad_clip = 1.0
 
 # logging/checkpointing
@@ -39,8 +39,8 @@ save_iters = 100
 
 
 init_from = "resume"  # "scratch" or "resume"
-tokens_cache = "tokenizer/fineweb_1mb_tokens.pt"
-text_data = "tokenizer/fineweb_1mb.txt"
+tokens_cache = "tokenizer/fineweb_10mb_tokens.pt"
+text_data = "tokenizer/fineweb_10mb.txt"
 
 
 #####################
