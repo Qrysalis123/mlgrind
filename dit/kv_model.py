@@ -4,10 +4,10 @@ DiT (Diffusion Transformer) with Block-wise KV Caching
 API:
     # Standard forward (no caching)
     logits = model(x, sigma)
-    
+
     # Build cache from clean prefix
     kv_cache = model.build_cache(prefix_tokens)
-    
+
     # Denoise using cache (fast - only computes on x_noisy)
     logits = model(x_noisy, sigma, kv_cache=kv_cache)
 """
@@ -30,6 +30,7 @@ class DiTConfig:
     n_blocks: int = 12
     n_heads: int = 8
     dropout: float = 0.1
+
 
 
 # KV cache: list of (K, V) per layer, each (B, H, S, D)
@@ -142,10 +143,13 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
+        self.dim = dim
 
     def forward(self, x):
-        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
-        return (x / rms) * self.weight
+        with torch.amp.autocast('cuda', enabled=False):
+            x_fp32 = x.float()
+            rms = torch.sqrt(torch.mean(x_fp32 ** 2, dim=-1, keepdim=True) + self.eps)
+            return ((x_fp32 / rms) * self.weight).type_as(x)
 
 
 class DDiTBlock(nn.Module):
@@ -159,7 +163,7 @@ class DDiTBlock(nn.Module):
         self.norm1 = LayerNorm(dim)
         self.attn_qkv = nn.Linear(dim, 3 * dim, bias=False)
         self.attn_out = nn.Linear(dim, dim, bias=False)
-        
+
         # QK-Norm for attention stability
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
@@ -184,7 +188,7 @@ class DDiTBlock(nn.Module):
     ) -> torch.Tensor:
         """
         Forward pass.
-        
+
         Args:
             x: (B, S, D) hidden states
             rotary_cos_sin: (cos, sin) for positions of x
@@ -308,7 +312,7 @@ class DDiTBlock(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute K, V for clean prefix (no adaLN - sigma=0).
-        
+
         Returns:
             h_out: (B, S, D) output hidden states
             k: (B, H, S, D_head)
@@ -388,18 +392,24 @@ class DiT(nn.Module):
         x: torch.Tensor,
         sigma: torch.Tensor,
         kv_cache: Optional[KVCache] = None,
+        x_clean: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass.
-        
+
         Args:
             x: (B, S) token indices to denoise
             sigma: (B,) noise level
             kv_cache: optional KV cache from build_cache()
-        
+            x_clean: optional (B, S_clean) clean prefix for training mode
+
         Returns:
-            logits: (B, S, V)
+            logits: (B, S, V) or (B, S_noisy, V) if x_clean provided
         """
+        # Training mode with clean prefix
+        if x_clean is not None:
+            return self._forward_train(x, sigma, x_clean)
+
         B, S = x.shape
         device = x.device
 
@@ -424,24 +434,31 @@ class DiT(nn.Module):
         sigma: torch.Tensor,
         x_clean: torch.Tensor,
     ) -> torch.Tensor:
+        """Wrapper for backward compatibility. Use forward(x, sigma, x_clean=x_clean) instead."""
+        return self._forward_train(x_noisy, sigma, x_clean)
+
+    def _forward_train(
+        self,
+        x_noisy: torch.Tensor,
+        sigma: torch.Tensor,
+        x_clean: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Training forward with clean prefix + noisy block.
-        
+
         Concatenates [x_clean, x_noisy], runs full attention,
         but only applies adaLN to noisy portion. Gradients flow through both.
-        
+
         Args:
             x_noisy: (B, S_noisy) noisy tokens to denoise
             sigma: (B,) noise level
             x_clean: (B, S_clean) clean prefix tokens
-        
+
         Returns:
             logits: (B, S_noisy, V) predictions for noisy block only
         """
-        B = x_noisy.shape[0]
         S_clean = x_clean.shape[1]
         S_noisy = x_noisy.shape[1]
-        device = x_noisy.device
 
         # Embed and concat
         h_clean = self.vocab_embed(x_clean)
@@ -449,7 +466,7 @@ class DiT(nn.Module):
         h = torch.cat([h_clean, h_noisy], dim=1)
 
         c = F.silu(self.sigma_map(sigma))
-        rotary_cos_sin = self.rotary_emb.get_range(0, S_clean + S_noisy, device)
+        rotary_cos_sin = self.rotary_emb.get_range(0, S_clean + S_noisy, h.device)
 
         # Process with split adaLN
         for blk in self.blocks:
@@ -468,32 +485,29 @@ class DiT(nn.Module):
     ) -> KVCache:
         """
         Build or extend KV cache from clean tokens.
-        
+
         Args:
             tokens: (B, S) clean token indices to add to cache
             kv_cache: optional existing cache to extend
-        
+
         Returns:
             kv_cache: list of (K, V) per layer
         """
-        B, S = tokens.shape
-        device = tokens.device
-
-        # Position offset if extending existing cache
+        S = tokens.shape[1]
         offset = kv_cache[0][0].shape[2] if kv_cache else 0
 
         h = self.vocab_embed(tokens)
-        rotary_cos_sin = self.rotary_emb.get_range(offset, S, device)
+        rotary_cos_sin = self.rotary_emb.get_range(offset, S, h.device)
 
         new_cache = []
         for i, blk in enumerate(self.blocks):
             h, k, v = blk.get_kv(h, rotary_cos_sin)
-            
+
             # Append to existing cache if provided
             if kv_cache is not None:
                 k = torch.cat([kv_cache[i][0], k], dim=2)
                 v = torch.cat([kv_cache[i][1], v], dim=2)
-            
+
             new_cache.append((k, v))
 
         return new_cache

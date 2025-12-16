@@ -1,10 +1,10 @@
 """
-Data preparation and high-throughput training loader.
+Data preparation and high-throughput training loader for One Billion Words.
 Usage:
     # Prepare data ONCE (tokenize + chunk + save)
-    python finewebedu.py
+    python openwebtext.py
     # Training scripts:
-    from finewebedu import get_dataloader
+    from openwebtext import get_dataloader
 """
 import os
 from itertools import chain
@@ -19,25 +19,23 @@ TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), "tokenizer/bpe-32k-unca
 # PREPROCESS + SAVE TO DISK
 # -------------------------------------------------------------------
 def prepare_data(
-    dataset_name="HuggingFaceFW/fineweb-edu",
-    subset="sample-10BT",
+    dataset_name="azhang42/one-billion-words",
     split="train",
     seq_len=1024,
-    output_dir=".cache/fineweb-edu-10BT",
+    output_dir=".cache/one-billion-words",
     num_proc=8,
 ):
     """Download, tokenize, chunk, and save dataset to disk."""
-    print(f"\n▶ Loading dataset: {dataset_name} ({subset})")
-    data = load_dataset(dataset_name, name=subset, split=split)
+    print(f"\n▶ Loading dataset: {dataset_name}")
+    data = load_dataset(dataset_name, split=split)
     tokenizer = PreTrainedTokenizerFast(tokenizer_file=TOKENIZER_PATH)
     # ---------------------------------------------------------------
     # Tokenize step
     # ---------------------------------------------------------------
     def tokenize(examples):
-        text = examples.get("text") or examples.get("ctx")
+        text = examples.get("text")
         if text is None:
             raise ValueError(f"Unknown text column: {examples.keys()}")
-        # Only return input_ids
         return tokenizer(
             text,
             add_special_tokens=False,
@@ -102,7 +100,7 @@ def get_dataloader(
         dataset,
         batch_size=batch_size,
         sampler=sampler,
-        shuffle=(sampler is None),  # shuffle only if not using DDP
+        shuffle=(sampler is None),
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
@@ -113,13 +111,12 @@ def get_dataloader(
 # MAIN
 # -------------------------------------------------------------------
 if __name__ == "__main__":
-    output_dir = ".cache/fineweb-edu-10BT"
+    output_dir = ".cache/one-billion-words"
     if os.path.exists(output_dir):
         print(f"✔ Dataset already prepared at {output_dir} — skipping preprocessing.")
     else:
         prepare_data(
-            dataset_name="HuggingFaceFW/fineweb-edu",
-            subset="sample-10BT",
+            dataset_name="azhang42/one-billion-words",
             split="train",
             seq_len=1024,
             output_dir=output_dir,

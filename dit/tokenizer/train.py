@@ -10,7 +10,7 @@ from tokenizers import Tokenizer, models, trainers, pre_tokenizers, normalizers,
 
 CORPUS_FILE = "fineweb_edu_1gb_uncased.txt"
 VOCAB_SIZE = 32000
-OUTPUT_FILE = "bpe-32k-uncased-bytelevel-fixed.json"
+OUTPUT_FILE = "bpe-32k-uncased-bytelevel.json"
 
 print(f"Training {VOCAB_SIZE} vocab BPE on {CORPUS_FILE}...")
 

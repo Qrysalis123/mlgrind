@@ -9,42 +9,43 @@ from kv_model import DiT, DiTConfig
 from kv_noise import LogLinearNoise, UniformGraph
 from transformers import PreTrainedTokenizerFast
 
-out_dir = "kv_cpu_testing"
+out_dir = "poem_overfit"
 device = "cpu"
 
 #################
 #    config     #
 #################
 
-batch_size = 8
-seq_len = 1024
+batch_size = 16
+seq_len = 64
 
 # Block-wise training config
 # split_idx ~ Uniform[0, max_prefix] - includes 0 for "no prefix" case
 max_prefix_ratio = 0.9  # Maximum prefix length as ratio of seq_len
+min_prefix = 4
+max_prefix = 32
 
 # sampling
 sampling_eps = 1e-5
 noise_eps = 1e-3
 
 # optimizer
-lr = 3e-4
-min_lr = 1e-5  # for cosine decay
+lr = 1e-3
+min_lr = 1e-4  # for cosine decay
 beta1 = 0.9
 beta2 = 0.999
-weight_decay = 0.1
-warmup_iters = 2000
-max_iters = 100000  # for cosine decay
+weight_decay = 0.0  # no weight decay for overfitting
+warmup_iters = 100
+max_iters = 10000  # for cosine decay
 grad_clip = 1.0
 
 # logging/checkpointing
-eval_iters = 100
-save_iters = 100
+eval_iters = 50
+save_iters = 50
 
 
 init_from = "resume"  # "scratch" or "resume"
-tokens_cache = "tokenizer/fineweb_10mb_tokens.pt"
-text_data = "tokenizer/fineweb_10mb.txt"
+text_data = "shakespeare.txt"
 
 
 #####################
@@ -53,23 +54,24 @@ text_data = "tokenizer/fineweb_10mb.txt"
 print("Loading tokenizer...")
 tokenizer = PreTrainedTokenizerFast(tokenizer_file="tokenizer/bpe-32k-uncased-bytelevel.json")
 
-if os.path.exists(tokens_cache):
-    print(f"Loading cached tokens from {tokens_cache}...")
-    tokens = torch.load(tokens_cache, weights_only=True)
-    print(f"Loaded {tokens.numel():,} tokens")
-else:
-    print(f"Loading {text_data}...")
-    with open(f"{text_data}", "r", encoding="utf-8") as f:
-        text = f.read()
+print(f"Loading {text_data}...")
+with open(text_data, "r", encoding="utf-8") as f:
+    text = f.read()
 
-    print(f"Text length: {len(text):,} chars")
-    print("Tokenizing (this may take a moment)...")
-    tokens = tokenizer.encode(text, add_special_tokens=False)
-    print(f"Total tokens: {len(tokens):,}")
+print(f"Text length: {len(text):,} chars")
+print("Tokenizing...")
+tokens = tokenizer.encode(text, add_special_tokens=False)
+print(f"Total tokens: {len(tokens):,}")
 
-    tokens = torch.tensor(tokens, dtype=torch.long)
-    print(f"Saving tokens to {tokens_cache}...")
-    torch.save(tokens, tokens_cache)
+tokens = torch.tensor(tokens, dtype=torch.long)
+
+# For small text, repeat to get more sequences
+num_seqs = len(tokens) // seq_len
+if num_seqs < batch_size * 4:
+    # Repeat tokens to have enough data
+    repeats = (batch_size * 8 * seq_len) // len(tokens) + 1
+    tokens = tokens.repeat(repeats)
+    print(f"Repeated {repeats}x for overfitting")
 
 tokens = tokens[:len(tokens) // seq_len * seq_len].view(-1, seq_len)
 print(f"Sequences: {tokens.shape[0]:,}, Seq len: {seq_len}")
@@ -97,11 +99,11 @@ os.makedirs(os.path.join(out_dir, "samples"), exist_ok=True)
 config = DiTConfig(
     hidden_size=512,
     cond_dim=128,
-    length=1024,
+    length=128,
     vocab=32768,
-    n_blocks=12,
+    n_blocks=16,
     n_heads=8,
-    dropout=0.1
+    dropout=0.1  # no dropout for overfitting
 )
 
 print(f"\nConfig: {config}")
@@ -174,8 +176,7 @@ while True:  # infinite training
 
     # Block-wise training: random split into clean prefix + noisy block
     # split_idx=0 means entire sequence is noisy (standard diffusion)
-    max_prefix = min(S - 1, int(max_prefix_ratio * S))
-    split_idx = torch.randint(0, max_prefix + 1, (1,)).item()
+    split_idx = torch.randint(min_prefix, max_prefix + 1, (1,)).item()
 
     x_clean = x0[:, :split_idx]  # Clean prefix (ground truth)
     x0_noisy_block = x0[:, split_idx:]  # Ground truth for noisy block
@@ -184,10 +185,7 @@ while True:  # infinite training
     x_noisy = graph.sample_transition(x0_noisy_block, sigma[:, None])
 
     # Forward pass
-    if split_idx > 0:
-        log_score = model.forward_train(x_noisy, sigma, x_clean)
-    else:
-        log_score = model(x_noisy, sigma)
+    log_score = model(x_noisy, sigma, x_clean=x_clean)
 
     # SEDD loss (only on noisy block)
     loss_per_token = graph.score_entropy(log_score, sigma[:, None], x_noisy, x0_noisy_block)
@@ -224,51 +222,38 @@ while True:  # infinite training
             with open(sample_file, "a") as f:
                 f.write(f"\n=== Step {step} ===\n\n")
 
-            # Block-wise sampling
-            for total_len, block_size in [(16, 4), (24, 8), (32, 8)]:
-                num_blocks = (total_len + block_size - 1) // block_size
 
+            for b in [8, 16, 32, 64]:
+                # Block-wise sampling - use poem prefix
+                prefix = "romeo"
+                prefix_tok = torch.tensor([tokenizer.encode(prefix)])
+
+                kv_cache = model.build_cache(prefix_tok)
+                num_steps = b  # denoising steps (independent of block size)
+
+                # initialize noisy block
+                x_block = graph.sample_limit(1, b).to(device)
+                timesteps = torch.linspace(1, sampling_eps, num_steps + 1, device=device)
+                dt_sample = (1 - sampling_eps) / num_steps
+
+                for i in range(num_steps):
+                    t_sample = timesteps[i]
+                    sigma_sample, dsigma_sample = noise.get_noise(t_sample.expand(1))
+
+                    log_score = model(x_block, sigma_sample, kv_cache=kv_cache)
+                    score = log_score.exp()
+                    rev_rate = dt_sample * dsigma_sample[:, None, None] * graph.reverse_rate(x_block, score)
+                    x_block = graph.sample_rate(x_block, rev_rate)
+                    x_block = x_block.clamp(0, config.vocab-1)
+
+                text_response = torch.cat([prefix_tok, x_block], dim=1)
+                text_response = tokenizer.decode(text_response[0].tolist())
                 kv_cache = None
-                x_generated = torch.empty(1, 0, dtype=torch.long, device=device)
-                block_texts = []
-
-                for block_idx in range(num_blocks):
-                    curr_block_size = min(block_size, total_len - x_generated.shape[1])
-                    if curr_block_size <= 0:
-                        break
-
-                    # Initialize noisy block
-                    x_block = graph.sample_limit(1, curr_block_size).to(device)
-
-                    # Diffusion steps for this block
-                    num_steps = curr_block_size * 2
-                    timesteps = torch.linspace(1, sampling_eps, num_steps + 1, device=device)
-                    dt_sample = (1 - sampling_eps) / num_steps
-
-                    for i in range(num_steps):
-                        t_sample = timesteps[i]
-                        sigma_sample, dsigma_sample = noise.get_noise(t_sample.expand(1))
-
-                        log_score = model(x_block, sigma_sample, kv_cache=kv_cache)
-
-                        score = log_score.exp()
-                        rev_rate = dt_sample * dsigma_sample[:, None, None] * graph.reverse_rate(x_block, score)
-                        x_block = graph.sample_rate(x_block, rev_rate)
-
-                    # Append generated block and extend cache
-                    x_block = x_block.clamp(0, config.vocab - 1)
-                    block_text = tokenizer.decode(x_block[0].tolist())
-                    block_texts.append(block_text)
-                    kv_cache = model.build_cache(x_block, kv_cache=kv_cache)
-                    x_generated = torch.cat([x_generated, x_block], dim=1)
-
-                # Print with block separators
-                output = " | ".join(block_texts)
-                print(f"[{total_len} tokens, block={block_size}] {output}")
+                print(f"block & step: {b} \n{text_response}")
                 print()
 
                 with open(sample_file, "a") as f:
-                    f.write(f"[{total_len} tokens, block={block_size}]\n{output}\n\n")
+                    f.write(f"[{b} tokens, block={b}]\n{text_response}\n\n")
 
         # Save checkpoint
         torch.save({
